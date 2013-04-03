@@ -1,6 +1,6 @@
 #include "query.h"
 
-bool urltable_create(char *fname, unordered_map<unsigned int, UrlTable> &urlTable, unsigned int &didCnt, unsigned int &avgLen);
+bool urltable_create(string fnames, unordered_map<unsigned int, UrlTable> &urlTable, unsigned int &didCnt, unsigned int &avgLen);
 bool lex_tree_create(char *fname, char *chkfname, unordered_map<string, LexNode> &lexTree);
 //void docid_mapper_create(char *fname, unordered_map<unsigned int, docNode> &docTree);
 void query(string keywords, char **argv, unordered_map<string, LexNode> &lexTree,
@@ -24,7 +24,12 @@ char *memAlloc(gzFile* fileName, int size, bool readAll = true);
 unsigned int vb_decode(Record &listbuf);
 string get_fnames(char* path);
 string trim_tags(string);
+bool load_next_10_urltable_names(unordered_map<unsigned int, UrlTable> &urlTable,
+                                 unsigned int &didCnt, unsigned int &avgLen);
+
+
 double k = 1.2, b = 0.75; // parameters of BM25
+stringstream urlss;
 
 int main(int argc, char **argv){
   if(argc != 5){
@@ -38,32 +43,48 @@ int main(int argc, char **argv){
     cerr<<"Error creating lex tree"<<endl;
     exit(1);
   }
+  cout<<"Lexicon Cnt: "<<lexTree.size()<<endl;
+  // for(auto itr = lexTree.begin(); itr!=lexTree.end(); ++itr)
+  //   cout<<itr->first<<',';
 
+  urlss<<get_fnames(argv[4]);
   unordered_map<unsigned int, UrlTable> urlTable;
   unsigned int didCnt = 0, avgLen = 0;
-  if(urltable_create(argv[4], urlTable, didCnt, avgLen) == false){
-    exit(1);
-  }
-  cout<<endl<<"loading time: "<<(double)(clock()-beg)/CLOCKS_PER_SEC<<endl;
+  // if(urltable_create(argv[4], urlTable, didCnt, avgLen) == false){
+  //   exit(1);
+  // }
+  load_next_10_urltable_names(urlTable, didCnt, avgLen);
+
+  cout<<"DocCnt: "<<didCnt<<","<<"avgLen: "<<avgLen<<endl;
+  cout<<"loading time: "<<(double)(clock()-beg)/CLOCKS_PER_SEC<<endl;
 
 
   string keywords;
   cout<<endl<<"Keywords: ";
-  // while(getline(cin, keywords)){
-  //     beg = clock();
-  //   // cout<<"Keywords: "<<keywords<<endl;
-  //   if(keywords == "__exit__") break;
-  //   query(keywords, argv, lexTree, urlTable, didCnt, avgLen, topk);
-  //   cout<<endl<<"Total time: "<<(double)(clock()-beg)/CLOCKS_PER_SEC<<endl;
-  //   cout<<endl<<"Keywords: ";
-  // }
-  query("pepsi", argv, lexTree, urlTable, didCnt, avgLen, topk);
+  while(getline(cin, keywords)){
+    beg = clock();
+    if(keywords == "__exit__") break;
+    query(keywords, argv, lexTree, urlTable, didCnt, avgLen, topk);
+    cout<<endl<<"Total time: "<<(double)(clock()-beg)/CLOCKS_PER_SEC<<endl;
+    cout<<endl<<"Keywords: ";
+  }
+  //  query("pepsi", argv, lexTree, urlTable, didCnt, avgLen, topk);
 
   return 0;
 }
+
 void query(string keywords, char **argv, unordered_map<string, LexNode> &lexTree,
            unordered_map<unsigned int, UrlTable> &urlTable,
            unsigned int didCnt, unsigned int avgLen, unsigned int topk){
+  
+  if(urlTable.size() == 0){
+    urlss.str(string());
+    urlss<<get_fnames(argv[4]);
+    if(!load_next_10_urltable_names(urlTable, didCnt, avgLen)){
+      cerr<<"urlTable loading error"<<endl;
+      return;
+    }
+  }
 
   vector<Record> lps; // save the lists
   if(!openLists(keywords, lps, lexTree, argv[2])) exit(1); 
@@ -133,22 +154,23 @@ bool lex_tree_create(char *lexname,char* chkfname, unordered_map<string, LexNode
     return false;
   }
 
-  unsigned int curPos = 0, ft = 0, offset = 0, chkoffset = 0, curChkPos = 0;
+  long curPos = 0;
+  unsigned int ft = 0, offset = 0, chkoffset = 0, curChkPos = 0;
   string word;
   char *lexData = memAlloc(inlex, 409600, true);
   stringstream lexbuf(lexData);
   char *chkData = memAlloc(chkHandle, 409600, true);
   string sChkData(chkData);
 
-  while(!lexbuf.eof()){
-    lexbuf>>word>>ft>>offset>>chkoffset; 
+  while(lexbuf>>word>>ft>>offset>>chkoffset){
+    //lexbuf>>word>>ft>>offset>>chkoffset; 
     ChkRec chkRec;
     //cout<<word<<","<<sChkData.size()<<","<<offset<<endl;
     stringstream buf(sChkData.substr(curChkPos, chkoffset));
     unsigned int docid = 0, docOffset = 0;
 
-    while(!buf.eof()){
-      buf>>docid>>docOffset;
+    while(buf>>docid>>docOffset){
+      //buf>>docid>>docOffset;
       chkRec.chks.push_back(ChkInfo(docid, docOffset));
     }
 
@@ -164,39 +186,23 @@ bool lex_tree_create(char *lexname,char* chkfname, unordered_map<string, LexNode
 
   return true;
 }
-
-
-char *memAlloc(gzFile* fileName, int size, bool readAll){
-    char *buffer=(char *)malloc(size);
-    int oldSize=size;
-    int count=0;             //The number of bytes that already read
-
-    while (!gzeof((gzFile_s*)fileName)){ 
-      int cur = gzread((gzFile_s*)fileName,buffer+count,oldSize);        
-      if (cur < oldSize){
-        if (!gzeof ((gzFile_s*)fileName)){
-          const char * error_string;
-          int err;
-          error_string = gzerror ((gzFile_s*)fileName, & err);
-          if (err) {
-            fprintf (stderr, "Error: %s.\n", error_string);
-            free(buffer);
-            buffer = NULL;
-            return buffer;
-          }   
-        }
-      }
-      count += cur;
-      if(readAll == false)
-        break;
-      if (count == size){                    // Reallocate when buffer is full
-        oldSize=size;
-        size*=2;
-        buffer=(char *)realloc(buffer,size);
-      }
-    }
-    return buffer;
+bool load_next_10_urltable_names(unordered_map<unsigned int, UrlTable> &urlTable,
+                                 unsigned int &didCnt, unsigned int &avgLen){
+  urlTable.clear();
+  int next = 10;
+  string fname;
+  string next_10_fnames;
+  while(urlss>>fname && next--){
+    next_10_fnames.append(fname + " ");
+  }
+  if(urltable_create(next_10_fnames.c_str(), urlTable, didCnt, avgLen) == false){
+    return false;
+  }
+  return true;
 }
+
+
+
 bool openLists(string keywords, vector<Record> &lps,unordered_map<string, LexNode> &lexTree, char* listfilename){
 
   ifstream infile(listfilename, ifstream::binary);
@@ -300,7 +306,7 @@ long nextGEQ(Record &lp, unsigned int k){
 string get_fnames(char* path){
   string cmd("ls ");
   cmd.append(path);
-  cmd.append("/");
+  cmd.append("/* | sort -k4 -t/ -n"); // sort by start docid
   // sort numerically (-n) on the third field (-k3) using 'p' 
   // as the field separator (-tp).
   //cout<<cmd<<endl;
@@ -337,20 +343,23 @@ string trim_tags(string s){
   return s;
 }
 
-bool urltable_create(char *fpath, unordered_map<unsigned int, UrlTable> &urlTable, 
+bool urltable_create(string fnames, unordered_map<unsigned int, UrlTable> &urlTable, 
                      unsigned int &didCnt, unsigned int &avgLen){
-  string fnames = get_fnames(fpath);
+  //string fnames = get_fnames(fpath);
   stringstream ss(fnames);
   string lastPagePath;
   unsigned int curPagePos = 0; // covert the offset to real position
-  string strPath(fpath);
+  //string strPath(fpath);
 
   while(!ss.eof()){
     string fname, line;
     ss>>fname;
-    if(fname.find("-") == string::npos)
-      break; // ignore non-urltable files
-    ifstream urlHandle(strPath + fname);
+
+    if(fname.find_first_of("-") == string::npos){
+      //cout<<"urltable_create: bad urltable: "<<fname<<endl;
+      continue; // ignore non-urltable files
+    }
+    igzstream urlHandle(fname.c_str());
     if(!urlHandle.good()){
       cerr<<"Error opening urltable "<<fname<<":"<<urlHandle.rdstate()<<endl;
       return false;
@@ -432,33 +441,36 @@ string createSnippet(vector<Record> &lps, Result &result, UrlTable &ut){
   }
   int readSize = 128+1;
   char *rawSpt = new char[readSize];
-  // get the best snippet
+  //TODO: get the best snippet
   Hit hit = getContextAndPosition(lps[0].lp, result.posRes[0].startPos);
-
   gzseek((gzFile_s*)pageHandle, ut.pos + hit.wordPos, 0);
 
   stringstream ss;
-  int r = gzread((gzFile_s*)pageHandle, rawSpt, readSize-1);
-  if (r < readSize){
-    if (!gzeof ((gzFile_s*)pageHandle)){
-      const char * error_string;
-      int err;
-      error_string = gzerror ((gzFile_s*)pageHandle, & err);
-      if (err) {
-        fprintf (stderr, "Error: %s.\n", error_string);
-        delete[] rawSpt;
-        gzclose((gzFile_s*)pageHandle);
-        return string();
-      }   
+  do{
+    int r = gzread((gzFile_s*)pageHandle, rawSpt, readSize-1);
+    if (r < readSize){
+      if (!gzeof ((gzFile_s*)pageHandle)){
+        const char * error_string;
+        int err;
+        error_string = gzerror ((gzFile_s*)pageHandle, & err);
+        if (err) {
+          fprintf (stderr, "Error: %s.\n", error_string);
+          delete[] rawSpt;
+          gzclose((gzFile_s*)pageHandle);
+          return string();
+        }   
+      }
     }
-  }
-  rawSpt[readSize-1] = '\0';
+    rawSpt[readSize-1] = '\0';
+  }while(string(rawSpt).find_first_of(lps[0].keyword) < 0);
+
   ss<<rawSpt<<endl;
   //  string strSpt(rawSpt);
   delete[] rawSpt;
   gzclose((gzFile_s*)pageHandle);
 
   return trim_tags(ss.str()); //strSpt;
+  
 }
 
 Hit getContextAndPosition(vector<char> list, int offset){
@@ -480,3 +492,34 @@ Hit getContextAndPosition(vector<char> list, int offset){
   return Hit(context, pos);
 }
 // find MinMax minimum
+char *memAlloc(gzFile* fileName, int size, bool readAll){
+    char *buffer=(char *)malloc(size);
+    int oldSize=size;
+    int count=0;             //The number of bytes that already read
+
+    while (!gzeof((gzFile_s*)fileName)){ 
+      int cur = gzread((gzFile_s*)fileName,buffer+count,oldSize);        
+      if (cur < oldSize){
+        if (!gzeof ((gzFile_s*)fileName)){
+          const char * error_string;
+          int err;
+          error_string = gzerror ((gzFile_s*)fileName, & err);
+          if (err) {
+            fprintf (stderr, "Error: %s.\n", error_string);
+            free(buffer);
+            buffer = NULL;
+            return buffer;
+          }   
+        }
+      }
+      count += cur;
+      if(readAll == false)
+        break;
+      if (count == size){                    // Reallocate when buffer is full
+        oldSize=size;
+        size*=2;
+        buffer=(char *)realloc(buffer,size);
+      }
+    }
+    return buffer;
+}

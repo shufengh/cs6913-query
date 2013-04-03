@@ -7,7 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
-#include <zlib.h>
+#include "gzstream.h"
 #include <complex> // log
 #include <algorithm>
 #include <queue>
@@ -31,11 +31,11 @@ struct ChkRec{
 
 
 struct LexNode{ // save the lexicon and help info
-  unsigned int pos;
+  long pos;
   unsigned int offset;
   unsigned int ft;
   ChkRec chkRec;
-  LexNode( unsigned int p=0, unsigned int of=0, unsigned int f = 0){
+  LexNode( long p=0, unsigned int of=0, unsigned int f = 0){
     pos = p;
     offset = of;
     ft = f;
