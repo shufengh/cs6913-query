@@ -83,6 +83,15 @@ struct Result{
   vector<PosRes> posRes;
 };
 
+struct Hit{
+  short context;
+  short wordPos;
+  Hit(short c= 3, short p = 0){ // 3 = plain
+    context = c;
+    wordPos = p;
+  }
+};
+
 class BM25Comparator{
  public:
   bool operator() (const Result& lhs, const Result&rhs) const{

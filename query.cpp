@@ -3,6 +3,9 @@
 bool urltable_create(char *fname, unordered_map<unsigned int, UrlTable> &urlTable, unsigned int &didCnt, unsigned int &avgLen);
 bool lex_tree_create(char *fname, char *chkfname, unordered_map<string, LexNode> &lexTree);
 //void docid_mapper_create(char *fname, unordered_map<unsigned int, docNode> &docTree);
+void query(string keywords, char **argv, unordered_map<string, LexNode> &lexTree,
+           unordered_map<unsigned int, UrlTable> &urlTable,
+           unsigned int didCnt, unsigned int avgLen, unsigned int topk);
 bool openLists(string keywords, vector<Record> &lps, unordered_map<string, LexNode> &lexTree, char* listfilename);
 bool closeLists(vector<Record> &lps);
 long nextGEQ(Record &lp, unsigned int k);
@@ -10,14 +13,17 @@ unsigned int getFreq(Record &lp);
 void getBM25(unordered_map<unsigned int, UrlTable> &urlTable,
              vector<Record> &lps, Result &result, unsigned int didCnt, 
              unsigned int avgLen);
-void printResults(unordered_map<unsigned int, UrlTable> &urlTable, vector<Record> &lps,
+void printResults(unordered_map<unsigned int, UrlTable> &urlTable, 
+                  vector<Record> &lps,
                   priority_queue<Result, vector<Result>, BM25Comparator> &resultSet,
                   unsigned int topk);
+string createSnippet(vector<Record> &lps, Result &result, UrlTable &ut);
+Hit getContextAndPosition(vector<char> list, int offset);
 
 char *memAlloc(gzFile* fileName, int size, bool readAll = true);
 unsigned int vb_decode(Record &listbuf);
 string get_fnames(char* path);
-
+string trim_tags(string);
 double k = 1.2, b = 0.75; // parameters of BM25
 
 int main(int argc, char **argv){
@@ -25,74 +31,92 @@ int main(int argc, char **argv){
     cout<<"Format: ./query lexicon i2list i2chunk urltable topk"<<endl;
     exit(1);
   }
-
+  clock_t beg = clock();
   unsigned int topk = 10; // = argv[5]
   unordered_map<string, LexNode> lexTree;
   if(lex_tree_create(argv[1], argv[3], lexTree) == false){
     cerr<<"Error creating lex tree"<<endl;
     exit(1);
   }
+
   unordered_map<unsigned int, UrlTable> urlTable;
   unsigned int didCnt = 0, avgLen = 0;
   if(urltable_create(argv[4], urlTable, didCnt, avgLen) == false){
     exit(1);
   }
-  
-  clock_t beg = clock();
-  string keywords="hack";
-  cout<<"Keywords: "<<keywords<<endl;  
+  cout<<endl<<"loading time: "<<(double)(clock()-beg)/CLOCKS_PER_SEC<<endl;
+
+
+  string keywords;
+  cout<<endl<<"Keywords: ";
   // while(getline(cin, keywords)){
-  //   cout<<keywords<<endl;
-  //     cout<<"close search engine"<<endl;
-  //     break;
-  //   }	./query test/lexicon.gz test/i2list test/i2chunk ./urltable/
-  //   cout<<lexTree[keywords].pos<<','<<lexTree[keywords].offset<<endl;
-  //   cout<<"Keywords: ";
+  //     beg = clock();
+  //   // cout<<"Keywords: "<<keywords<<endl;
+  //   if(keywords == "__exit__") break;
+  //   query(keywords, argv, lexTree, urlTable, didCnt, avgLen, topk);
+  //   cout<<endl<<"Total time: "<<(double)(clock()-beg)/CLOCKS_PER_SEC<<endl;
+  //   cout<<endl<<"Keywords: ";
   // }
+  query("pepsi", argv, lexTree, urlTable, didCnt, avgLen, topk);
+
+  return 0;
+}
+void query(string keywords, char **argv, unordered_map<string, LexNode> &lexTree,
+           unordered_map<unsigned int, UrlTable> &urlTable,
+           unsigned int didCnt, unsigned int avgLen, unsigned int topk){
+
   vector<Record> lps; // save the lists
-  if(!openLists(keywords, lps, lexTree, argv[2])) exit(1); //TODO: change to break
-  long did = 0;
+  if(!openLists(keywords, lps, lexTree, argv[2])) exit(1); 
 
   priority_queue<Result, vector<Result>, BM25Comparator> resultSet;
+  long did = 0;
+  unsigned resCnt = 0;
   while(lps.size() != 0){
     did = nextGEQ(lps[0], did);
-    long d = did; // if there's only one keyword, put them all in the heap
+    long d = did; // if there's only one keyword, put all records in the heap
     for(unsigned i = 1; i < lps.size() && did > -1 
           && (d = nextGEQ(lps[i], did)) == did; ++i);
     if( did == -1 || d == -1){
       break;
     }
-    
-    if (d > did) did = d;
-    else{
+    //  cout<<d<<":"<<did<<endl;
+    if (d > did) {
+      did = d;
+      // position skipping is determined by did?d
+      for(unsigned i = 0; i < lps.size(); ++i){
+        unsigned f = getFreq(lps[i]);
+        lps[i].pos += f*2;
+      }
+    }
+    else if( d == did){
+
+      ++resCnt;
+
       Result result;
       result.did = d;
       for(unsigned i = 0; i < lps.size(); ++i){
-        int f = getFreq(lps[i]);
+        unsigned f = getFreq(lps[i]);
+        //cout<<lps[i].pos<<"-"<<f<<endl;
         result.posRes.push_back(PosRes(f, lps[i].pos));
         lps[i].pos += f*2; // pos pointer jumps through the position info
       }
       getBM25(urlTable, lps, result, didCnt, avgLen);
       
-      if (resultSet.size() >= topk){
-        //cout<<resultSet.top().bm25<<',';
-        //resultSet.pop();
-        resultSet.push(result);
+      if (resultSet.size() < topk) resultSet.push(result);
+      else{
+        if(resultSet.top().bm25 < result.bm25){
+          resultSet.pop();
+          resultSet.push(result);
+        }
       }
-      else resultSet.push(result);
+      did += 1; // go find the next same docid
     }
   }
-  cout<<"query got: "<<resultSet.size()<<endl;
-  // for(auto itr = lps[0].begin(); itr != lps[0].end(); ++ itr)
-  //   cout<<(char)(*itr);
-  //int tmp = topk;
-  // while(tmp-- && !resultSet.empty()){
-  //       cout<<resultSet.top().bm25<<',';
-  //       resultSet.pop();
-  // }
+  cout<<"query got: "<<resCnt<<endl;
   printResults(urlTable, lps, resultSet, topk);
-  cout<<endl<<"Total time: "<<(double)(clock()-beg)/CLOCKS_PER_SEC<<endl;
-  return 0;
+  
+  while(!resultSet.empty()) resultSet.pop();
+  lps.clear();
 
 }
 
@@ -241,25 +265,27 @@ unsigned int vb_decode(Record &listbuf){
   return num;
 }
 long nextGEQ(Record &lp, unsigned int k){
-  // while(lp.nodeInfo.chkRec.curChk < lp.nodeInfo.chkRec.chks.size() &&
-  //       lp.nodeInfo.chkRec.chks[lp.nodeInfo.chkRec.curChk].docid < k){
-  //   lp.pos += lp.nodeInfo.chkRec.chks[lp.nodeInfo.chkRec.curChk].pos;
-  //   ++lp.nodeInfo.chkRec.curChk;
-  // }
-  // if (lp.nodeInfo.chkRec.curChk == lp.nodeInfo.chkRec.chks.size()){
-  //   cout<<"A list reaches its end"<<endl;
-  //   return -1; // a record just reaches its end no need to continue the search
-  // }
+  while(lp.nodeInfo.chkRec.curChk < lp.nodeInfo.chkRec.chks.size() &&
+        lp.nodeInfo.chkRec.chks[lp.nodeInfo.chkRec.curChk].docid < k){
+    lp.pos += lp.nodeInfo.chkRec.chks[lp.nodeInfo.chkRec.curChk].pos;
+    ++lp.nodeInfo.chkRec.curChk;
+  }
+  if (lp.nodeInfo.chkRec.curChk == lp.nodeInfo.chkRec.chks.size()){
+    //cout<<"A list reaches its end"<<endl;
+    return -1; // a record just reaches its end no need to continue the search
+  }
+
   if (lp.pos == lp.lp.size()){
     //    cout<<" A list reaches its end"<<endl;
     return -1; // reach its end
   }
   unsigned int d = 0;
   do {
+
     d = vb_decode(lp);
-    if(d >= k){
-      break;
-    }
+
+    if(d >= k) break;
+
     unsigned freq = getFreq(lp);
     if( freq == 0 ){
       cout<<"freq = 0"<<endl;
@@ -290,6 +316,25 @@ string get_fnames(char* path){
   } 
   pclose(handle);
   return fnames;
+}
+string trim_tags(string s){
+
+ for(unsigned i=0; i<s.length(); i++)
+   if(s[i] == '\n' || s.substr(i,2) == "  ") s.erase(i,1);
+
+  int end = s.find_first_of(">");
+  int beg = s.find_first_of("<");
+  if(end != -1 && end < beg) s = s.substr(end+1);
+
+  beg = s.find_first_of("<");
+  while(beg != -1){
+    end = s.find_first_of(">");
+    if (end == -1) s = s.erase(beg, s.size()-1);
+    s = s.erase(beg, end + 1 - beg);
+    beg = s.find_first_of("<");
+  }
+
+  return s;
 }
 
 bool urltable_create(char *fpath, unordered_map<unsigned int, UrlTable> &urlTable, 
@@ -341,14 +386,13 @@ void getBM25(unordered_map<unsigned int, UrlTable> &urlTable,
              vector<Record> &record, Result &result, unsigned int didCnt, 
              unsigned int avgLen){
   unsigned int lenOfdoc = 0;
+  double bm25 = 0;
   auto itr = urlTable.find(result.did);
  
  if( itr != urlTable.end()) lenOfdoc = itr->second.pageSize;
   else lenOfdoc = avgLen;
   
   double K = k*((1-b) + b*lenOfdoc/avgLen);
-
-  double bm25 = 0;
   for(unsigned int i = 0; i < result.posRes.size(); ++i){
     bm25 += log((didCnt + record[i].nodeInfo.ft + 0.5)
                 /(record[i].nodeInfo.ft + 0.5)) 
@@ -359,31 +403,80 @@ void getBM25(unordered_map<unsigned int, UrlTable> &urlTable,
 }
 
 void printResults(unordered_map<unsigned int, UrlTable> &urlTable, vector<Record> &lps,
-                  priority_queue<Result, vector<Result>, BM25Comparator> &resultSet, unsigned int topk){
+                  priority_queue<Result, vector<Result>, BM25Comparator> &resultSet,
+                  unsigned int topk){
   stringstream output;
-  while(topk--){    
+  unsigned int tmp = 0;
+  while(tmp++ < topk && resultSet.size() > 0){    
     Result result = resultSet.top();
     resultSet.pop();
-    output<<result.bm25<<" ";
+    output<<tmp<<" "<<result.bm25<<" ";
     auto itr = urlTable.find(result.did);
     if(itr == urlTable.end()){
       cout<<"printResults: docid not find in UrlTable"<<endl;
       continue;
     }
     output<<itr->second.url<<endl;
-    output<<"    "<<itr->second.pagePath<<" "<<itr->second.pos<<endl;
-    
+    //output<<"    "<<itr->second.pagePath<<" "<<itr->second.pos<<endl;
+    output<<"    "<<createSnippet(lps, result, itr->second)<<endl;
+    output<<"---------------------------------------------------"<<endl;
   }
   cout<<output.str();
 }
-string createSnippet(Result &result, UrlTable &ut){
-  gzFile* pageHandle =(gzFile*) gzopen(string("../indexer/"+ut.pagePath).c_str(),"r");
+string createSnippet(vector<Record> &lps, Result &result, UrlTable &ut){
+  string filename = string("../indexer/"+ut.pagePath);
+  gzFile* pageHandle =(gzFile*) gzopen(filename.c_str(),"r");
   if (!pageHandle) {
-    cerr<<"Error opening "<<string("../indexer/"+ut.pagePath)<<":"<<strerror(errno)<<endl;
+    cerr<<"Error opening "<<filename<<":"<<strerror(errno)<<endl;
     return string();
   }
+  int readSize = 128+1;
+  char *rawSpt = new char[readSize];
   // get the best snippet
+  Hit hit = getContextAndPosition(lps[0].lp, result.posRes[0].startPos);
 
+  gzseek((gzFile_s*)pageHandle, ut.pos + hit.wordPos, 0);
+
+  stringstream ss;
+  int r = gzread((gzFile_s*)pageHandle, rawSpt, readSize-1);
+  if (r < readSize){
+    if (!gzeof ((gzFile_s*)pageHandle)){
+      const char * error_string;
+      int err;
+      error_string = gzerror ((gzFile_s*)pageHandle, & err);
+      if (err) {
+        fprintf (stderr, "Error: %s.\n", error_string);
+        delete[] rawSpt;
+        gzclose((gzFile_s*)pageHandle);
+        return string();
+      }   
+    }
+  }
+  rawSpt[readSize-1] = '\0';
+  ss<<rawSpt<<endl;
+  //  string strSpt(rawSpt);
+  delete[] rawSpt;
   gzclose((gzFile_s*)pageHandle);
-  return string();
+
+  return trim_tags(ss.str()); //strSpt;
 }
+
+Hit getContextAndPosition(vector<char> list, int offset){
+  //currently only return its postion
+  short context = 0;
+  short pos = 0;
+  // char Record::context[7] = "BHIPTU";
+  offset -= 2;
+  do{
+    offset +=2;
+    context = list[offset]>>5 & 0x07;
+    // skip the situation in which the keyword in in the link
+  }while(context == 5 && offset < (signed)(list.size()-2));  
+  //  cout<<"____"<<context<<endl;
+  pos = static_cast<unsigned char>(list[offset]) & 0x1f;
+  pos <<= 8;
+  pos += static_cast<unsigned char>(list[offset+1]);
+  
+  return Hit(context, pos);
+}
+// find MinMax minimum
