@@ -11,6 +11,7 @@ bool closeLists(vector<Record> &lps);
 long nextGEQ(Record &lp, unsigned int k);
 unsigned int getFreq(Record &lp);
 void getBM25(unordered_map<unsigned int, UrlTable> &urlTable,
+             unordered_map<unsigned int, UrlTable> &resultUrlTable,
              vector<Record> &lps, Result &result, unsigned int didCnt, 
              unsigned int avgLen);
 void printResults(unordered_map<unsigned int, UrlTable> &urlTable, 
@@ -25,7 +26,8 @@ unsigned int vb_decode(Record &listbuf);
 string get_fnames(char* path);
 string trim_tags(string);
 bool load_next_10_urltable_names(unordered_map<unsigned int, UrlTable> &urlTable,
-                                 unsigned int &didCnt, unsigned int &avgLen);
+                                 unsigned int &didCnt, unsigned int &avgLen,
+                                 long did);
 
 
 double k = 1.2, b = 0.75; // parameters of BM25
@@ -53,7 +55,7 @@ int main(int argc, char **argv){
   // if(urltable_create(argv[4], urlTable, didCnt, avgLen) == false){
   //   exit(1);
   // }
-  load_next_10_urltable_names(urlTable, didCnt, avgLen);
+  load_next_10_urltable_names(urlTable, didCnt, avgLen, 0);
 
   cout<<"DocCnt: "<<didCnt<<","<<"avgLen: "<<avgLen<<endl;
   cout<<"loading time: "<<(double)(clock()-beg)/CLOCKS_PER_SEC<<endl;
@@ -69,7 +71,8 @@ int main(int argc, char **argv){
     cout<<endl<<"Keywords: ";
   }
   //  query("pepsi", argv, lexTree, urlTable, didCnt, avgLen, topk);
-
+  lexTree.clear();
+  urlTable.clear();
   return 0;
 }
 
@@ -80,12 +83,12 @@ void query(string keywords, char **argv, unordered_map<string, LexNode> &lexTree
   if(urlTable.size() == 0){
     urlss.str(string());
     urlss<<get_fnames(argv[4]);
-    if(!load_next_10_urltable_names(urlTable, didCnt, avgLen)){
+    if(!load_next_10_urltable_names(urlTable, didCnt, avgLen, 0)){
       cerr<<"urlTable loading error"<<endl;
       return;
     }
   }
-
+  unordered_map<unsigned int, UrlTable> resultUrlTable;
   vector<Record> lps; // save the lists
   if(!openLists(keywords, lps, lexTree, argv[2])) exit(1); 
 
@@ -121,7 +124,7 @@ void query(string keywords, char **argv, unordered_map<string, LexNode> &lexTree
         result.posRes.push_back(PosRes(f, lps[i].pos));
         lps[i].pos += f*2; // pos pointer jumps through the position info
       }
-      getBM25(urlTable, lps, result, didCnt, avgLen);
+      getBM25(urlTable, resultUrlTable, lps, result, didCnt, avgLen);
       
       if (resultSet.size() < topk) resultSet.push(result);
       else{
@@ -134,11 +137,11 @@ void query(string keywords, char **argv, unordered_map<string, LexNode> &lexTree
     }
   }
   cout<<"query got: "<<resCnt<<endl;
-  printResults(urlTable, lps, resultSet, topk);
+  printResults(resultUrlTable, lps, resultSet, topk);
   
   while(!resultSet.empty()) resultSet.pop();
   lps.clear();
-
+  urlTable.clear();
 }
 
 bool lex_tree_create(char *lexname,char* chkfname, unordered_map<string, LexNode> &lexTree){
@@ -187,17 +190,34 @@ bool lex_tree_create(char *lexname,char* chkfname, unordered_map<string, LexNode
   return true;
 }
 bool load_next_10_urltable_names(unordered_map<unsigned int, UrlTable> &urlTable,
-                                 unsigned int &didCnt, unsigned int &avgLen){
+                                 unsigned int &didCnt, unsigned int &avgLen, long did){
+
   urlTable.clear();
   int next = 10;
   string fname;
   string next_10_fnames;
-  while(urlss>>fname && next--){
+  while(urlss>>fname){
+    int split = fname.find_first_of("-");
+    if(split == -1) {
+      cerr<<"load_next_10: bad urltable "<<fname<<endl; 
+      continue;
+    }
+    unsigned endDid = atol(fname.substr(split+1).c_str());
+    if(endDid == 0){
+      cerr<<"load_next_10: bad urltable "<<fname<<endl; 
+      continue;
+    }
+    if(did > endDid) continue;
+    
     next_10_fnames.append(fname + " ");
+    if(next-- == 0) break;
+    
   }
+  if (urlss.tellp() == 0) return false;
   if(urltable_create(next_10_fnames.c_str(), urlTable, didCnt, avgLen) == false){
     return false;
   }
+  //  cout<<"load_next_10_urltable_names"<<endl<<next_10_fnames<<endl;
   return true;
 }
 
@@ -306,7 +326,7 @@ long nextGEQ(Record &lp, unsigned int k){
 string get_fnames(char* path){
   string cmd("ls ");
   cmd.append(path);
-  cmd.append("/* | sort -k4 -t/ -n"); // sort by start docid
+  cmd.append("* | sort -k4 -t/ -n"); // sort by start docid
   // sort numerically (-n) on the third field (-k3) using 'p' 
   // as the field separator (-tp).
   //cout<<cmd<<endl;
@@ -356,7 +376,7 @@ bool urltable_create(string fnames, unordered_map<unsigned int, UrlTable> &urlTa
     ss>>fname;
 
     if(fname.find_first_of("-") == string::npos){
-      //cout<<"urltable_create: bad urltable: "<<fname<<endl;
+      cout<<"urltable_create: bad urltable: ["<<fname<<"]"<<endl;//<< ss.str()<<endl;
       continue; // ignore non-urltable files
     }
     igzstream urlHandle(fname.c_str());
@@ -392,14 +412,25 @@ bool urltable_create(string fnames, unordered_map<unsigned int, UrlTable> &urlTa
   return true;
 }
 void getBM25(unordered_map<unsigned int, UrlTable> &urlTable,
+             unordered_map<unsigned int, UrlTable> &resultUrlTable,
              vector<Record> &record, Result &result, unsigned int didCnt, 
              unsigned int avgLen){
   unsigned int lenOfdoc = 0;
   double bm25 = 0;
+  //cout<<"DOCID:"<<result.did<<endl;
   auto itr = urlTable.find(result.did);
- 
- if( itr != urlTable.end()) lenOfdoc = itr->second.pageSize;
-  else lenOfdoc = avgLen;
+  while(itr == urlTable.end()){
+    if(!load_next_10_urltable_names(urlTable, didCnt, avgLen, result.did)){
+      cerr<<"getBM25: docid Not found"<<endl;
+      return;
+    }
+    itr = urlTable.find(result.did);
+  } 
+  if( itr != urlTable.end()) {
+    lenOfdoc = itr->second.pageSize;
+    resultUrlTable.insert(pair<unsigned int, UrlTable>(itr->first, itr->second));
+  }
+  
   
   double K = k*((1-b) + b*lenOfdoc/avgLen);
   for(unsigned int i = 0; i < result.posRes.size(); ++i){
@@ -426,7 +457,6 @@ void printResults(unordered_map<unsigned int, UrlTable> &urlTable, vector<Record
       continue;
     }
     output<<itr->second.url<<endl;
-    //output<<"    "<<itr->second.pagePath<<" "<<itr->second.pos<<endl;
     output<<"    "<<createSnippet(lps, result, itr->second)<<endl;
     output<<"---------------------------------------------------"<<endl;
   }
